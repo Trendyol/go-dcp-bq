@@ -1,0 +1,30 @@
+hosts:
+  - localhost:8091
+username: user
+password: 123456
+bucketName: dcp-test
+scopeName: _default
+collectionNames:
+  - _default
+logging:
+  level: info
+dcp:
+  group:
+    name: dc-bq-test
+metadata:
+  type: couchbase
+  config:
+    bucket: dcp-test
+    scope: _default
+    collection: _default
+bigQuery:
+  projectId: dummy-project-id
+  datasetId: dummy-dataset-id
+  tableId: dummy-table-id
+  credentialsFile: dummy_cred.json
+  bulk:
+    maxBatchSize: 500
+    maxBufferSize: 25000
+    bufferFlushTickerDuration: 2m
+    queryExecuteTickerDuration: 10m
+    queryExecuteThresholdCount: 250000
