@@ -14,13 +14,16 @@ import (
 	"github.com/Trendyol/go-dcp/models"
 )
 
+const (
+	maxConcurrentBatchUpsert = 20
+)
+
 type Bulk struct {
 	bigQueryClient      client.Client
 	dcpCheckpointCommit func()
 	config              config.BulkConfiguration
 	targetTable         _bq.Identifier
 
-	batchTicker        *time.Ticker
 	queryExecuteTicker *time.Ticker
 	queryExecuteMutex  sync.Mutex
 
@@ -62,11 +65,10 @@ func New(cfg *config.Connector, dcpCheckpointCommit func()) (*Bulk, error) {
 	bulk := &Bulk{
 		bigQueryClient:      bigQueryClient,
 		dcpCheckpointCommit: dcpCheckpointCommit,
-		config:              cfg.Bulk,
+		config:              cfg.BigQuery.Bulk,
 		targetTable:         *_bq.NewIdentifier(cfg.BigQuery.ProjectId, cfg.BigQuery.DatasetId, cfg.BigQuery.TableId),
-		batchTicker:         time.NewTicker(cfg.Bulk.BatchTickerDuration),
-		queryExecuteTicker:  time.NewTicker(cfg.Bulk.QueryExecuteTickerDuration),
-		buffer:              newBuffer(cfg.Bulk, sourceTable),
+		queryExecuteTicker:  time.NewTicker(cfg.BigQuery.Bulk.QueryExecuteTickerDuration),
+		buffer:              newBuffer(cfg.BigQuery.Bulk, sourceTable),
 		metric:              &_bq.Metric{},
 		isDcpRebalancing:    false,
 	}
@@ -88,12 +90,19 @@ func newBuffer(cfg config.BulkConfiguration, sourceTable *_bq.Identifier) *buffe
 }
 
 func validateConfig(cfg *config.Connector) error {
-	if cfg.Bulk.MaxBufferSize <= 0 {
-		return fmt.Errorf("max batch size is required")
+	if cfg.BigQuery.ProjectId == "" {
+		return fmt.Errorf("project id is required")
 	}
-	if cfg.Bulk.BatchTickerDuration <= 0 {
-		return fmt.Errorf("batch ticker duration is required")
+	if cfg.BigQuery.DatasetId == "" {
+		return fmt.Errorf("dataset id is required")
 	}
+	if cfg.BigQuery.TableId == "" {
+		return fmt.Errorf("table id is required")
+	}
+	if cfg.BigQuery.CredentialsFile == "" {
+		return fmt.Errorf("credentials file is required")
+	}
+
 	return nil
 }
 
@@ -139,7 +148,6 @@ func (b *Bulk) GetMetric() *_bq.Metric {
 func (b *Bulk) StartBulk() {
 	go b.startBufferFlushLoop(b.buffer, b.flushBuffer)
 	go b.startQueryExecuteLoop()
-	b.startBatchTickerLoop()
 }
 
 func (b *Bulk) startBufferFlushLoop(buf *buffer, flushFunc func()) {
@@ -154,16 +162,9 @@ func (b *Bulk) startQueryExecuteLoop() {
 	}
 }
 
-func (b *Bulk) startBatchTickerLoop() {
-	for range b.batchTicker.C {
-		b.dcpCheckpointCommit()
-	}
-}
-
 func (b *Bulk) AddActions(ctx *models.ListenerContext, eventTime time.Time, actions []_bq.Row) error {
 	b.buffer.Mu.Lock()
 	defer b.buffer.Mu.Unlock()
-
 	if b.isDcpRebalancing {
 		logger.Log.Warn("Could not add new items to batch while rebalancing")
 		return fmt.Errorf("writer is rebalancing")
@@ -192,14 +193,14 @@ func (b *Bulk) flushBuffer() {
 	}
 
 	startTime := time.Now()
-
 	batch := b.extractBatch(b.buffer)
+
 	b.acknowledgeBatch(batch)
 
 	tempData := b.convertToValueSavers(batch)
 	sourceTable := b.bigQueryClient.GetTable(b.buffer.SourceTable.ProjectId, b.buffer.SourceTable.DatasetId, b.buffer.SourceTable.TableName)
 
-	go b.processBatchesInParallel(sourceTable, tempData)
+	b.processBatchesInParallel(sourceTable, tempData)
 
 	if b.buffer.accumulatedCount >= b.config.QueryExecuteThresholdCount {
 		if err := b.executeQuery(); err != nil {
@@ -236,23 +237,37 @@ func (b *Bulk) convertToValueSavers(batch []_bq.Row) []bigquery.ValueSaver {
 func (b *Bulk) processBatchesInParallel(table *bigquery.Table, data []bigquery.ValueSaver) {
 	maxBatchSize := b.config.MaxBatchSize
 
+	if len(data) == 0 {
+		return
+	}
+
 	if len(data) <= maxBatchSize {
-		if err := b.bigQueryClient.BatchInsert(context.Background(), table, data, len(data)); err != nil {
+		if err := b.bigQueryClient.Insert(context.Background(), table, data); err != nil {
 			logger.Log.Error("error while writing to bigquery, err: %v", err)
 		}
 		return
 	}
 
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentBatchUpsert)
 
 	for i := 0; i < len(data); i += maxBatchSize {
 		end := min(i+maxBatchSize, len(data))
 
 		wg.Add(1)
+		sem <- struct{}{}
+
 		go func(chunk []bigquery.ValueSaver) {
 			defer wg.Done()
-			if err := b.bigQueryClient.BatchInsert(context.Background(), table, chunk, len(chunk)); err != nil {
+			defer func() { <-sem }()
+
+			if err := b.bigQueryClient.Insert(
+				context.Background(),
+				table,
+				chunk,
+			); err != nil {
 				logger.Log.Error("error while writing to bigquery, err: %v", err)
+				return
 			}
 		}(data[i:end])
 	}
@@ -263,6 +278,8 @@ func (b *Bulk) processBatchesInParallel(table *bigquery.Table, data []bigquery.V
 func (b *Bulk) executeQuery() error {
 	b.queryExecuteMutex.Lock()
 	defer b.queryExecuteMutex.Unlock()
+
+	logger.Log.Info("Executing query")
 
 	columns, err := b.getFilteredColumns()
 	if err != nil {
@@ -278,7 +295,7 @@ func (b *Bulk) executeQuery() error {
 	)
 
 	if err := b.bigQueryClient.ExecuteQuery(context.Background(), unifiedQuery); err != nil {
-		return fmt.Errorf("failed to execute query: %w", err)
+		return err
 	}
 
 	if err := b.recreateTemporaryTable(b.buffer); err != nil {
@@ -286,7 +303,9 @@ func (b *Bulk) executeQuery() error {
 	}
 
 	b.buffer.accumulatedCount = 0
-	logger.Log.Info("Executed unified query (upsert and delete)")
+	logger.Log.Info("Executed query")
+
+	b.dcpCheckpointCommit()
 	return nil
 }
 
@@ -340,8 +359,8 @@ func (b *Bulk) PrepareEndRebalancing() {
 
 func (b *Bulk) Close() error {
 	logger.Log.Info("Closing bigquery bulk writer")
-
-	b.batchTicker.Stop()
+	b.buffer.Ticker.Stop()
+	b.queryExecuteTicker.Stop()
 
 	b.buffer.Mu.Lock()
 	defer b.buffer.Mu.Unlock()

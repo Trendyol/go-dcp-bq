@@ -55,23 +55,18 @@ func (c *connector) GetDcpClient() dcpCouchbase.Client {
 }
 
 func (c *connector) listener(ctx *models.ListenerContext) {
-
 	// Initialize ListenerTrace for current listen operation
 	listenerTrace := ctx.ListenerTracerComponent.InitializeListenerTrace("Listen", nil)
 	defer listenerTrace.Finish()
-
 	var e couchbase.Event
 	switch event := ctx.Event.(type) {
 	case models.DcpMutation:
-		logger.Log.Info("Event received: Key=%s, Type=Mutation", string(event.Key))
 		e = couchbase.NewMutateEvent(listenerTrace, event.Key, event.Value, event.CollectionName, event.EventTime, event.Cas, event.VbID)
-		c.handleMerge(ctx, e)
+		c.handleUpsert(ctx, e)
 	case models.DcpExpiration:
-		logger.Log.Info("Event received: Key=%s, Type=Expiration", string(event.Key))
 		e = couchbase.NewExpireEvent(listenerTrace, event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 		c.handleDelete(ctx, e)
 	case models.DcpDeletion:
-		logger.Log.Info("Event received: Key=%s, Type=Deletion", string(event.Key))
 		e = couchbase.NewDeleteEvent(listenerTrace, event.Key, nil, event.CollectionName, event.EventTime, event.Cas, event.VbID)
 		c.handleDelete(ctx, e)
 	default:
@@ -79,7 +74,7 @@ func (c *connector) listener(ctx *models.ListenerContext) {
 	}
 }
 
-func (c *connector) handleMerge(ctx *models.ListenerContext, e couchbase.Event) {
+func (c *connector) handleUpsert(ctx *models.ListenerContext, e couchbase.Event) {
 	actions, err := c.mapper.TransformEvents([]couchbase.Event{e})
 	if err != nil {
 		logger.Log.Error("Cannot map event, error: %v", err)

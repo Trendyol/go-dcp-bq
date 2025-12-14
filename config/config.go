@@ -13,44 +13,40 @@ const (
 )
 
 type BigQuery struct {
-	ProjectId       string `yaml:"projectId"`
-	DatasetId       string `yaml:"datasetId"`
-	TableId         string `yaml:"tableId"`
-	CredentialsFile string `yaml:"credentialsFile"`
+	ProjectId       string            `yaml:"projectId"`
+	DatasetId       string            `yaml:"datasetId"`
+	TableId         string            `yaml:"tableId"`
+	CredentialsFile string            `yaml:"credentialsFile"`
+	Bulk            BulkConfiguration `yaml:"bulk" mapstructure:"bulk"`
 }
 
 type BulkConfiguration struct {
 	MaxBatchSize               int           `yaml:"maxBatchSize"`
 	MaxBufferSize              int           `yaml:"maxBufferSize"`
-	BatchTickerDuration        time.Duration `yaml:"batchTickerDuration"`
 	BufferFlushTickerDuration  time.Duration `yaml:"bufferFlushTickerDuration"`
 	QueryExecuteTickerDuration time.Duration `yaml:"queryExecuteTickerDuration"`
 	QueryExecuteThresholdCount int           `yaml:"queryExecuteThresholdCount"`
 }
 
 type Connector struct {
-	BigQuery BigQuery          `yaml:"bigQuery" mapstructure:"bigQuery"`
-	Bulk     BulkConfiguration `yaml:"bulk" mapstructure:"bulk"`
-	Dcp      config.Dcp        `yaml:",inline" mapstructure:",squash"`
+	BigQuery BigQuery   `yaml:"bigQuery" mapstructure:"bigQuery"`
+	Dcp      config.Dcp `yaml:",inline" mapstructure:",squash"`
 }
 
 func (c *Connector) ApplyDefaults() {
-	if c.Bulk.BatchTickerDuration.Nanoseconds() == 0 {
-		c.Bulk.BatchTickerDuration = 10 * time.Second
+	if c.BigQuery.Bulk.MaxBatchSize <= 0 {
+		c.BigQuery.Bulk.MaxBatchSize = 500
 	}
-	if c.Bulk.MaxBatchSize == 0 {
-		c.Bulk.MaxBatchSize = 250
+	if c.BigQuery.Bulk.MaxBufferSize <= 0 {
+		c.BigQuery.Bulk.MaxBufferSize = 25_000
 	}
-	if c.Bulk.MaxBufferSize == 0 {
-		c.Bulk.MaxBufferSize = 500
+	if c.BigQuery.Bulk.BufferFlushTickerDuration.Nanoseconds() <= 0 {
+		c.BigQuery.Bulk.BufferFlushTickerDuration = 2 * time.Minute
 	}
-	if c.Bulk.BufferFlushTickerDuration.Nanoseconds() == 0 {
-		c.Bulk.BufferFlushTickerDuration = 20 * time.Second
+	if c.BigQuery.Bulk.QueryExecuteTickerDuration.Nanoseconds() <= 0 {
+		c.BigQuery.Bulk.QueryExecuteTickerDuration = 10 * time.Minute
 	}
-	if c.Bulk.QueryExecuteTickerDuration.Nanoseconds() == 0 {
-		c.Bulk.QueryExecuteTickerDuration = 10 * time.Minute
-	}
-	if c.Bulk.QueryExecuteThresholdCount == 0 {
-		c.Bulk.QueryExecuteThresholdCount = 10_000
+	if c.BigQuery.Bulk.QueryExecuteThresholdCount <= 0 {
+		c.BigQuery.Bulk.QueryExecuteThresholdCount = 250_000
 	}
 }

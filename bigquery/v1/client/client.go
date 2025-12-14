@@ -80,9 +80,23 @@ func (c *client) CreateTemporaryTable(projectId, datasetId, tableName string) (*
 		return nil, fmt.Errorf("target table '%s' does not exist: %w", targetTable, err)
 	}
 
+	// Add additional fields to the schema for tracking events
+	schema := append(metadata.Schema,
+		&bigquery.FieldSchema{
+			Name:     config.EventTime,
+			Type:     bigquery.TimestampFieldType,
+			Required: true,
+		},
+		&bigquery.FieldSchema{
+			Name:     config.OperationType,
+			Type:     bigquery.StringFieldType,
+			Required: true,
+		},
+	)
+
 	expirationTime := time.Now().UTC().Add(time.Hour * 48)
 	metadataToCreate := &bigquery.TableMetadata{
-		Schema:         metadata.Schema,
+		Schema:         schema,
 		Name:           temporaryTableId,
 		ExpirationTime: expirationTime,
 	}
