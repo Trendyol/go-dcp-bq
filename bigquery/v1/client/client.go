@@ -61,7 +61,7 @@ func (b *client) Insert(ctx context.Context, table *bigquery.Table, data any) er
 	inserter := table.Inserter()
 
 	if err := inserter.Put(ctx, data); err != nil {
-		return fmt.Errorf("writing to table failed table id: %s, err: %v", table.TableID, err)
+		return fmt.Errorf("writing to table failed: %w", err)
 	}
 
 	return nil
@@ -76,8 +76,7 @@ func (c *client) CreateTemporaryTable(projectId, datasetId, tableName string) (*
 	table := c.GetTable(projectId, datasetId, tableName)
 	metadata, err := table.Metadata(context.Background())
 	if err != nil {
-		targetTable := fmt.Sprintf("%s.%s.%s", projectId, datasetId, tableName)
-		return nil, fmt.Errorf("target table '%s' does not exist: %w", targetTable, err)
+		return nil, fmt.Errorf("failed to retrieve target table metadata: %w", err)
 	}
 
 	// Add additional fields to the schema for tracking events
