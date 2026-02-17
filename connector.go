@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	jsoniter "github.com/json-iterator/go"
 
@@ -111,14 +114,19 @@ type ConnectorBuilder struct {
 }
 
 func newConnectorConfigFromPath(path string) (*config.Connector, error) {
-	file, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	if strings.Contains(cleanPath, "..") {
+		return nil, fmt.Errorf("invalid config path: path traversal is not allowed")
+	}
+
+	file, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 	var c config.Connector
 	err = yaml.Unmarshal(file, &c)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 	return &c, nil
 }

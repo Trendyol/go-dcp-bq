@@ -111,8 +111,7 @@ func validateTargetTable(client client.Client, bqConfig config.BigQuery) error {
 
 	table := client.GetTable(bqConfig.ProjectId, bqConfig.DatasetId, bqConfig.TableId)
 	if _, err := table.Metadata(ctx); err != nil {
-		targetTable := formatTableName(bqConfig.ProjectId, bqConfig.DatasetId, bqConfig.TableId)
-		return fmt.Errorf("target table '%s' does not exist: %w", targetTable, err)
+		return fmt.Errorf("target table does not exist or is not accessible: %w", err)
 	}
 
 	columns, err := client.GetTableColumns(ctx, bqConfig.ProjectId, bqConfig.DatasetId, bqConfig.TableId)
@@ -121,15 +120,10 @@ func validateTargetTable(client client.Client, bqConfig config.BigQuery) error {
 	}
 
 	if !containsColumn(columns, config.CBKey) {
-		targetTable := formatTableName(bqConfig.ProjectId, bqConfig.DatasetId, bqConfig.TableId)
-		return fmt.Errorf("target table '%s' must contain '%s' column for DCP operations", targetTable, config.CBKey)
+		return fmt.Errorf("target table must contain '%s' column for DCP operations", config.CBKey)
 	}
 
 	return nil
-}
-
-func formatTableName(projectId, datasetId, tableId string) string {
-	return fmt.Sprintf("%s.%s.%s", projectId, datasetId, tableId)
 }
 
 func containsColumn(columns []string, target string) bool {

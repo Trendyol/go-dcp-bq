@@ -2,30 +2,49 @@ package bigquery
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Trendyol/go-dcp-bq/config"
 )
+
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
+
+func sanitizeIdentifier(name string) string {
+	if !validIdentifier.MatchString(name) {
+		panic(fmt.Sprintf("invalid BigQuery identifier: %q", name))
+	}
+	return "`" + name + "`"
+}
 
 // BuildQuery builds a query that handles both upsert and delete operations from a single table
 // It ensures that for each __cb_key, only the latest event (by __event_time) is processed
 func BuildQuery(project, dataset, table, sourceTable string, columns []string) string {
 	setClauses := make([]string, 0, len(columns))
 	values := make([]string, 0, len(columns))
+	sanitizedColumns := make([]string, 0, len(columns))
 
 	for _, col := range columns {
 		if col == config.CBKey || col == config.OperationType || col == config.EventTime {
 			continue
 		}
-		setClauses = append(setClauses, fmt.Sprintf("%s = S.%s", col, col))
-		values = append(values, "S."+col)
+		safe := sanitizeIdentifier(col)
+		setClauses = append(setClauses, fmt.Sprintf("%s = S.%s", safe, safe))
+		values = append(values, "S."+safe)
+		sanitizedColumns = append(sanitizedColumns, safe)
 	}
+
+	safeProject := sanitizeIdentifier(project)
+	safeDataset := sanitizeIdentifier(dataset)
+	safeTable := sanitizeIdentifier(table)
+
+	targetRef := fmt.Sprintf("%s.%s.%s", safeProject, safeDataset, safeTable)
 
 	// Build a multi-statement script using BEGIN...END
 	query := fmt.Sprintf(
 		"BEGIN\n"+
 			"  -- Delete records\n"+
-			"  DELETE FROM `%s.%s.%s`\n"+
+			"  DELETE FROM %s\n"+
 			"  WHERE __cb_key IN (\n"+
 			"    WITH latest_events AS (\n"+
 			"      SELECT *,\n"+
@@ -36,7 +55,7 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 			"    WHERE rn = 1 AND __operation_type = 'DELETE'\n"+
 			"  );\n\n"+
 			"  -- Merge (upsert) records\n"+
-			"  MERGE INTO `%s.%s.%s` AS T\n"+
+			"  MERGE INTO %s AS T\n"+
 			"  USING (\n"+
 			"    WITH latest_events AS (\n"+
 			"      SELECT *,\n"+
@@ -53,12 +72,12 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 			"    INSERT (__cb_key, %s)\n"+
 			"    VALUES (S.__cb_key, %s);\n"+
 			"END",
-		project, dataset, table,
+		targetRef,
 		sourceTable,
-		project, dataset, table,
+		targetRef,
 		sourceTable,
 		strings.Join(setClauses, ", "),
-		strings.Join(columns, ", "),
+		strings.Join(sanitizedColumns, ", "),
 		strings.Join(values, ", "),
 	)
 
