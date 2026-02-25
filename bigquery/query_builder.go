@@ -10,11 +10,28 @@ import (
 
 var validIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
 
-func sanitizeIdentifier(name string) string {
+func sanitizeIdentifier(name string, includeBackticks bool) string {
 	if !validIdentifier.MatchString(name) {
 		panic(fmt.Sprintf("invalid BigQuery identifier: %q", name))
 	}
-	return "`" + name + "`"
+	if includeBackticks {
+		return "`" + name + "`"
+	}
+	return name
+}
+
+func sanitizeTableName(fullName string) string {
+	parts := strings.Split(fullName, ".")
+	if len(parts) != 3 {
+		panic("invalid BigQuery table name")
+	}
+
+	sanitizedParts := make([]string, len(parts))
+	for i, p := range parts {
+		sanitizedParts[i] = sanitizeIdentifier(p, false)
+	}
+
+	return strings.Join(sanitizedParts, ".")
 }
 
 // BuildQuery builds a query that handles both upsert and delete operations from a single table
@@ -28,15 +45,16 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 		if col == config.CBKey || col == config.OperationType || col == config.EventTime {
 			continue
 		}
-		safe := sanitizeIdentifier(col)
+		safe := sanitizeIdentifier(col, true)
 		setClauses = append(setClauses, fmt.Sprintf("%s = S.%s", safe, safe))
 		values = append(values, "S."+safe)
 		sanitizedColumns = append(sanitizedColumns, safe)
 	}
 
-	safeProject := sanitizeIdentifier(project)
-	safeDataset := sanitizeIdentifier(dataset)
-	safeTable := sanitizeIdentifier(table)
+	safeProject := sanitizeIdentifier(project, true)
+	safeDataset := sanitizeIdentifier(dataset, true)
+	safeTable := sanitizeIdentifier(table, true)
+	safeSourceTable := sanitizeTableName(sourceTable)
 
 	targetRef := fmt.Sprintf("%s.%s.%s", safeProject, safeDataset, safeTable)
 
@@ -49,7 +67,7 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 			"    WITH latest_events AS (\n"+
 			"      SELECT *,\n"+
 			"        ROW_NUMBER() OVER (PARTITION BY __cb_key ORDER BY __event_time DESC) as rn\n"+
-			"      FROM `%s`\n"+
+			"      FROM %s\n"+
 			"    )\n"+
 			"    SELECT __cb_key FROM latest_events \n"+
 			"    WHERE rn = 1 AND __operation_type = 'DELETE'\n"+
@@ -60,7 +78,7 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 			"    WITH latest_events AS (\n"+
 			"      SELECT *,\n"+
 			"        ROW_NUMBER() OVER (PARTITION BY __cb_key ORDER BY __event_time DESC) as rn\n"+
-			"      FROM `%s`\n"+
+			"      FROM %s\n"+
 			"    )\n"+
 			"    SELECT * FROM latest_events \n"+
 			"    WHERE rn = 1 AND __operation_type = 'UPSERT'\n"+
@@ -73,9 +91,9 @@ func BuildQuery(project, dataset, table, sourceTable string, columns []string) s
 			"    VALUES (S.__cb_key, %s);\n"+
 			"END",
 		targetRef,
-		sourceTable,
+		safeSourceTable,
 		targetRef,
-		sourceTable,
+		safeSourceTable,
 		strings.Join(setClauses, ", "),
 		strings.Join(sanitizedColumns, ", "),
 		strings.Join(values, ", "),
